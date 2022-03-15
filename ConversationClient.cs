@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Linq;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -10,6 +12,27 @@ namespace DrawAndGuessServer
 {
     internal class ConversationClient
     {
+        bool isHost = false;
+        private static SpinLock ImagingBlock = new SpinLock();
+        private static bool ImagingBlockDisposed = false;
+        public static Socket GetSocket(TcpClient cln)
+        {
+            Socket s = cln.Client;
+            return s;
+        }
+        public static string GetRemoteIP(TcpClient cln)
+        {
+            string ip = GetSocket(cln).RemoteEndPoint.ToString().Split(':')[0];
+            return ip;
+        }
+        public static int GetRemotePort(TcpClient cln)
+        {
+            string temp = GetSocket(cln).RemoteEndPoint.ToString().Split(':')[1];
+            int port = Convert.ToInt32(temp);
+            return port;
+        }
+        protected ManualResetEvent MsgRecved = new ManualResetEvent(false);
+        public string Name { get; set; } = "";
         readonly byte[] OKReply = new byte[2] { 122, 122 };
         public enum ConversationType
         {
@@ -37,11 +60,42 @@ namespace DrawAndGuessServer
         readonly TcpClient Client;
         readonly NetworkStream StreamL;
         public bool Connected { get { return Client.Connected; } }
+        byte[] RecvInsertRange(NetworkStream Stream, int Size)
+        {
+            var RecvedData = new byte[Size];
+            int RecvedSize = 0;
+
+            do
+            {
+                RecvedSize += Stream.Read(RecvedData, RecvedSize, (int)(Size - RecvedSize));
+            } while (RecvedSize < Size);
+            return RecvedData;
+        }
+        public bool hostflag = false;
         public ConversationClient(TcpClient Client)
         {
             this.Client = Client;
             StreamL = this.Client.GetStream();
+            MsgRecved.Reset();
             new Thread(new ParameterizedThreadStart(ClientHandler)) { IsBackground = true }.Start();
+            Task.Run(() =>
+            {
+                while (true)
+                    if (!isHost)
+                    {
+                        Task.Delay(500);
+                        byte[] Buf2 = new byte[1];
+                        MutifidImage(false, ref Buf2);
+
+                        TransHead(StreamL, ConversationType.ServerData, CommandType.BeginData, (uint)Buf2.Length);
+                        StreamL.Write(Buf2);
+                        if (hostflag) { 
+                            SetAsMain();
+                            hostflag = false;
+                            continue;
+                        }
+                    }
+            });
         }
         public void Disconnect()
         {
@@ -51,13 +105,14 @@ namespace DrawAndGuessServer
         void ClientHandler(object ?Param)
         {
             NetworkStream Stream = Client.GetStream();
-            byte[] HeadData = new byte[60];
             while (true)
             {
                 try
                 {
-                    Stream.Read(HeadData, 0, 60);
+                    byte[] HeadData = RecvInsertRange(Stream, Marshal.SizeOf(typeof(DataHead))); 
+
                     DataHead Head = (DataHead)BytesToStuct(HeadData, typeof(DataHead));
+                    if (Head.Rev != 255) continue;
                     ConversationType ct = (ConversationType)Head.ct;
                     CommandType cm = (CommandType)Head.cmt;
 
@@ -65,30 +120,41 @@ namespace DrawAndGuessServer
                     {
                         if (cm == CommandType.Test)
                         {
-                            byte[] Buf = new byte[Head.Length];
-                            Stream.Read(Buf, 0, Buf.Length);
+                            byte[] Buf = RecvInsertRange(Stream, (int)Head.Length);
 
-                            Console.WriteLine(Encoding.ASCII.GetString(Buf));
+                            Console.WriteLine(Encoding.ASCII.GetString(Buf) + " From:" + GetRemoteIP(Client));
 
-                            TransHead(Stream, ConversationType.ServerData, CommandType.Test, 2);
-                            Stream.Write(OKReply);
+                        }
+                        else if (cm == CommandType.SetName)
+                        {
+                            byte[] Buf = RecvInsertRange(Stream, (int)Head.Length);
+                            Name = Encoding.ASCII.GetString(Buf);
+                            Console.WriteLine("Name of " + GetRemoteIP(Client) + " was set as " + Name + ".");
+
+                        }
+                        else if (cm == CommandType.EndData)
+                        {
+                            var RecvedData = RecvInsertRange(Stream, (int)Head.Length);
+
+                            MutifidImage(true, ref RecvedData);
                         }
                     }
                     else if (ct == ConversationType.ClientData)
                     {
                         if (cm == CommandType.Test)
                         {
-                            byte[] Buf = new byte[Head.Length];
-                            Stream.Read(Buf, 0, Buf.Length);
+                            byte[] Buf = RecvInsertRange(Stream, (int)Head.Length);
 
-                            Console.WriteLine(Encoding.ASCII.GetString(Buf));
+                            Console.WriteLine(Encoding.ASCII.GetString(Buf) + " From:" + GetRemoteIP(Client));
                         }
                     }
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
+                    Console.WriteLine(e.Message);
                     break;
                 }
+                MsgRecved.Set();
             }
 
         }
@@ -98,7 +164,52 @@ namespace DrawAndGuessServer
 
             TransHead(StreamL, ConversationType.ServerCommand, CommandType.Test, (uint)DataC.Length);
             StreamL.Write(DataC);
+        }
+        public void SetAsMain()
+        {
+            TransHead(StreamL, ConversationType.ServerCommand, CommandType.SetName, 1U);
+            StreamL.Write(new byte[] { 1 });
 
+            isHost = true;
+        }
+
+        public void UnMain()
+        {
+            TransHead(StreamL, ConversationType.ServerCommand, CommandType.SetName, 1U);
+            StreamL.Write(new byte[] { 0 });
+
+            isHost = false;
+        }
+        void WaitForMsg()
+        {
+            MsgRecved.WaitOne();
+            MsgRecved.Reset();
+        }
+
+        void MutifidImage(bool io,ref byte [] Buf)
+        {
+            ImagingBlockDisposed = false;
+            ImagingBlock.Enter(ref ImagingBlockDisposed);
+            if (io)
+            {
+                try
+                {
+                    var newbmp = ImagingMedu.GetBitmap(Buf);
+
+                    Conversation.BMP.Dispose();
+                    Conversation.BMP = newbmp;
+                }
+                catch (Exception)
+                {
+
+                }
+
+            }
+            else
+            {
+                Buf = Conversation.BMP.CompressionImage(35);
+            }
+            ImagingBlock.Exit();
         }
         #region MMN
         public void TransHead(NetworkStream Stream, ConversationType ct, CommandType cm, uint Length)
