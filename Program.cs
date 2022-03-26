@@ -6,28 +6,44 @@ Conversation Server = new Conversation();
 Server.Start();
 
 
-Conversation.BMP = new Bitmap("koev09e.bmp");
+Conversation.BMP = new Bitmap("koev09e.bmp").CompressionImage(50);
 
 while(true)
 {
     string Data = Console.ReadLine();
-    if(Data=="Host")
+    if(Data=="Host1")
     {
         Server.Conversations[0].hostflag = true;
         continue;
     }
-    if (Data == "UnHost")
+    if (Data == "UnHost1")
     {
         Server.Conversations[0].UnMain();
         continue;
     }
-    if(Data=="Draw")
+
+    if (Data == "Host2")
     {
-        var g = Graphics.FromImage(Conversation.BMP);
-        g.DrawLine(new Pen(new SolidBrush(Color.Blue), 3f), 0, 0, new Random().Next(0, 1280), new Random().Next(0, 720));
-        g.Dispose();
+        Server.Conversations[1].hostflag = true;
         continue;
     }
-    Server.Conversations[0].Test(Data);
+    if (Data == "UnHost2")
+    {
+        Server.Conversations[1].UnMain();
+        continue;
+    }
+    if(Data=="clean")
+    {
+        List<ConversationClient> Conversations = new List<ConversationClient>();
+        for(int i=0;i< Server.Conversations.Count;i++)
+        {
+            if (!Server.Conversations[i].Connected) Conversations.Add(Server.Conversations[i]);
+        }
+
+        foreach(var i in Conversations)
+        {
+            Server.Conversations.Remove(i);
+        }
+    }
 }
 

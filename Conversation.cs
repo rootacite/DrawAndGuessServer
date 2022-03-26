@@ -12,7 +12,7 @@ namespace DrawAndGuessServer
 {
     internal class Conversation
     {
-        static public Bitmap BMP = null;
+        static public byte [] BMP = null;
         public string DrawingHost { get; set; }
         readonly short Port = 25535;
         readonly TcpListener Server;
